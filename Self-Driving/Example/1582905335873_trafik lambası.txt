@@ -1,0 +1,74 @@
+from picamera.array import PiRGBArray
+from picamera import PiCamera
+import numpy as np
+import time
+import cv2
+import math
+def main():
+    
+    camera = PiCamera()
+    camera.resolution =(320,240)
+    camera.framerate =32
+    rawCapture=PiRGBArray(camera,size=(320,240))
+ 
+    time.sleep(0.1)
+    #kýrmýzý renk deðerlikleri
+    alt_deger=np.array([60,60,100])
+    ust_deger=np.array([95,95,255])
+
+    #yeþil renk deðerlikleri
+    alt_deger_1=np.array([0,120,0])
+    ust_deger_1=np.array([100,255,100])
+ 
+    for frame in camera.capture_continuous(rawCapture,format="bgr",use_video_port=True):
+           
+        frame = frame.array
+        cv2.imshow("Kamera ilk Ekran",frame)
+        # kýrmýzý için
+        filtre1=cv2.inRange(frame,alt_deger,ust_deger)
+        cv2.imshow("Kýrmýzý Renk Aralýklarý",filtre1)
+        filtre1=cv2.GaussianBlur(filtre1,(3,3),2)
+        cv2.imshow("Kýrmýzý Gauss Filtresi",filtre1)
+        filtre1 = cv2.dilate(filtre1,np.ones((5,5),np.uint8))
+        cv2.imshow("Kýrmýzý Dilate kod",filtre1)
+        filtre1 = cv2.erode(filtre1,np.ones((5,5),np.uint8))
+        cv2.imshow("Kýrmýzý Erode kod",filtre1)
+        intRows,intColums = filtre1.shape
+        circles = cv2.HoughCircles(filtre1,cv2.HOUGH_GRADIENT,5,intRows/4)
+        if circles is not None:#kýrmýzý için
+             for circle in circles[0]:
+                 x,y,radius=circle
+                 cv2.circle(frame,(x,y),3,(255,255,255),-1)
+                 cv2.circle(frame,(x,y),radius,(0,0,255),3)
+                 
+        #yeþil için
+        filtre2=cv2.inRange(frame,alt_deger_1,ust_deger_1)
+        cv2.imshow("Yeþil Renk Aralýklarý",filtre2)
+        filtre2=cv2.GaussianBlur(filtre2,(3,3),2)
+        cv2.imshow("Yeþil Gauss Filtresi",filtre2)
+        filtre2 = cv2.dilate(filtre2,np.ones((5,5),np.uint8))
+        cv2.imshow("Yeþil Dilate kod",filtre2)
+        filtre2 = cv2.erode(filtre2,np.ones((5,5),np.uint8))
+        cv2.imshow("Yeþil Erode kod",filtre2)
+        intRows,intColums = filtre2.shape
+        circless = cv2.HoughCircles(filtre2,cv2.HOUGH_GRADIENT,5,intRows/4)
+        if circless is not None:
+            for circle in circless[0]:#yeþil için
+                x,y,radius=circle
+                cv2.circle(frame,(x,y),3,(255,255,255),-1)
+                cv2.circle(frame,(x,y),radius,(0,255,0),3)
+                
+
+        cv2.imshow("Ekran",frame)
+ 
+        key=cv2.waitKey(1)&0xFF
+ 
+        rawCapture.truncate(0)
+ 
+        if key==ord("q"):
+            return
+ 
+if __name__ == "__main__":
+        main()
+
+

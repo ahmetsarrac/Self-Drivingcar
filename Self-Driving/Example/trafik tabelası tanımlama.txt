@@ -1,0 +1,415 @@
+import cv2
+import numpy as np
+from picamera.array import PiRGBArray
+from picamera import PiCamera
+import time
+from imutils.perspective import four_point_transform
+import RPi.GPIO as GPIO
+import math
+
+camera=PiCamera()
+camera.resolution=(320,240)
+camera.framerate=32
+rawCapture=PiRGBArray(camera,size=(320,240))
+time.sleep(3)
+
+def identifyTrafficSign(image):
+    SIGNS_LOOKUP = {
+    (1, 0, 0, 1): 'SAGA DON', # turnRight
+    (0, 0, 1, 1): 'SOLA DON', # turnLeft
+    (0, 1, 0, 1): 'ILERI GIT', # moveStraight
+    (1, 0, 1, 1): 'GERI DON', # turnBack
+    }
+
+    THRESHOLD = 150
+    image = cv2.bitwise_not(image)
+    (subHeight, subWidth) = np.divide(image.shape, 10)
+    subHeight = int(subHeight)
+    subWidth = int(subWidth)
+
+    # substract 4 ROI of the sign thresh image
+    leftBlock = image[4*subHeight:9*subHeight, subWidth:3*subWidth]
+    centerBlock = image[4*subHeight:9*subHeight, 4*subWidth:6*subWidth]
+    rightBlock = image[4*subHeight:9*subHeight, 7*subWidth:9*subWidth]
+    topBlock = image[2*subHeight:4*subHeight, 3*subWidth:7*subWidth]
+
+    # we now track the fraction of each ROI
+    leftFraction = np.sum(leftBlock)/(leftBlock.shape[0]*leftBlock.shape[1])
+    centerFraction = np.sum(centerBlock)/(centerBlock.shape[0]*centerBlock.shape[1])
+    rightFraction = np.sum(rightBlock)/(rightBlock.shape[0]*rightBlock.shape[1])
+    topFraction = np.sum(topBlock)/(topBlock.shape[0]*topBlock.shape[1])
+    
+
+    segments = (leftFraction, centerFraction, rightFraction, topFraction)
+    
+    segments = tuple(1 if segment > THRESHOLD else 0 for segment in segments)
+    
+    if segments in SIGNS_LOOKUP:
+        tabela=open("tabela.txt","w")
+        if (segments==(1, 0, 0, 1)):
+            tabela.write("1001")
+        elif (segments==(0, 0, 1, 1)):
+            tabela.write("0011")
+        elif (segments==(0, 1, 0, 1)):
+            tabela.write("0101")
+        elif (segments==(1, 0, 1, 1)):
+            tabela.write("1011")
+        else:
+            return SIGNS_LOOKUP[segments]
+    else:
+        return None
+    cv2.imshow("Warped", image)
+
+def main():
+    
+
+    #Þerit eðim deðer baþlangýçlarý
+    largestLeftLineSize = 0
+    largestRightLineSize = 0
+    largestLeftLine = (0,0,0,0)
+    largestRightLine = (0,0,0,0)
+
+
+    #Baþlangýç deðerler
+    Tabela_kontrol=0
+    Tabela_okundu=0
+    Tabela_okundu_dogrumu=0
+    
+    #trafik levhalarý için
+    lower_blue = np.array([90,200,50])
+    upper_blue = np.array([110,255,255])
+ 
+    for frame in camera.capture_continuous(rawCapture,format="bgr",use_video_port=True):
+        
+        frame = frame.array
+        cv2.imshow("Kamera ilk görüntüsü",frame)
+        
+
+        frameArea = frame.shape[0]*frame.shape[1]
+        
+
+        # convert color image to HSV color scheme
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        cv2.imshow("Renk Uzayý-HSV",hsv)
+        # define kernel for smoothing   
+        kernel = np.ones((3,3),np.uint8)
+        
+        # extract binary image with active blue regions
+        mask = cv2.inRange(hsv, lower_blue, upper_blue)
+        # morphological operations
+        
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        cv2.imshow("HSV'den Ýstenen Aralýk",mask)
+
+        
+        #cv2.imshow("HSV'de istenilen Aralýk",mask)
+        #cv2.imshow("Renk Uzayý- HSV",hsv)
+        #cv2.imshow("imgBlurred",imgBlurred)
+        
+        #cv2.imshow("imgCanny",imgCanny)
+        #cv2.imshow("mask",mask)
+        #cv2.imshow("masked",masked)
+        
+
+        # find contours in the mask
+        cnts = cv2.findContours(mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2]
+        
+        
+        # defite string variable to hold detected sign description
+        detectedTrafficSign = None
+        
+        # define variables to hold values during loop
+        largestArea = 0
+        largestRect = None
+        
+        
+        if len(cnts) > 0:
+            for cnt in cnts:
+                rect = cv2.minAreaRect(cnt)
+                box = cv2.boxPoints(rect)
+                box = np.int0(box)
+                
+                sideOne = np.linalg.norm(box[0]-box[1])
+                sideTwo = np.linalg.norm(box[0]-box[3])
+                # count area of the rectangle
+                area = sideOne*sideTwo
+                # find the largest rectangle within all contours
+                if area > largestArea:
+                    largestArea = area
+                    largestRect = box
+        
+        
+        if largestArea > frameArea*0.02 :
+            # draw contour of the found rectangle on  the original image   
+            cv2.drawContours(frame,[largestRect],0,(0,0,255),2)
+            
+            # cut and warp interesting area
+            warped = four_point_transform(mask, [largestRect][0])
+            			
+	    # use function to detect the sign on the found rectangle
+            detectedTrafficSign = identifyTrafficSign(warped)
+            
+            cv2.putText(frame, detectedTrafficSign, (100, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
+            Tabela_kontrol=1
+        
+          
+        else:
+            Tabela_kontrol=0
+            
+        if (largestArea > frameArea*0.02) & (Tabela_kontrol==1):
+            while Tabela_okundu==0 :
+                # draw contour of the found rectangle on  the original image   
+                cv2.drawContours(frame,[largestRect],0,(0,0,255),2)
+            
+                # cut and warp interesting area
+                warped = four_point_transform(mask, [largestRect][0])
+            			
+	        # use function to detect the sign on the found rectangle
+                detectedTrafficSign = identifyTrafficSign(warped)
+            
+                cv2.putText(frame, detectedTrafficSign, (100, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
+                Tabela_1=1
+                tabela=open("tabela.txt","r")
+                Tabela=tabela.read()
+                if Tabela=="1001":
+                    Tabela_okundu=1
+                    print("Tabela saða algýlandý===>>>>>>>")
+                if Tabela=="0011":
+                    Tabela_okundu=1
+                    print("Tabela sola algýlandý<<<<<=====")
+                if Tabela=="0101":
+                    Tabela_okundu=1
+                    print("Tabela ileri algýlandý...")
+                if Tabela=="1011":
+                    Tabela_okundu=1
+                    print("Tabela geri algýlandý...")
+
+        if (largestArea > frameArea*0.02) & (Tabela_okundu==1):
+            
+            # draw contour of the found rectangle on  the original image   
+            cv2.drawContours(frame,[largestRect],0,(0,0,255),2)
+            
+            # cut and warp interesting area
+            warped = four_point_transform(mask, [largestRect][0])
+            			
+	    # use function to detect the sign on the found rectangle
+            detectedTrafficSign = identifyTrafficSign(warped)
+            
+            cv2.putText(frame, detectedTrafficSign, (100, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
+
+        else:
+            Tabela_okundu=0
+        cv2.imshow("Tabela Tanýmlama",frame)    
+        
+        if (Tabela_okundu==1) & (largestArea > frameArea*0.02):
+            tabela=open("tabela.txt","r")
+            Tabela=tabela.read()
+                            
+            if Tabela=="0011":#sola dön
+                
+                imgGrayscale=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
+                
+                imgBlurred = cv2.GaussianBlur(imgGrayscale,(5,5),0)
+                
+                imgCanny=cv2.Canny(imgBlurred,0,255)
+                
+                mask = np.zeros_like(imgCanny)
+                vertices =np.array([[(5,240),(5,50),(125,50),(140,240)]],np.int32)
+                cv2.fillPoly(mask, vertices, 255)
+                
+                masked = cv2.bitwise_and(imgCanny, mask)
+                
+                lines = cv2.HoughLinesP(masked,1,np.pi/180,10,maxLineGap=150)
+                if lines is not None:
+                    sag=0
+                    sol=0
+                    for line in lines:
+                        x1, y1, x2, y2 = line[0]
+                
+                        size = math.hypot(x2 - x1, y2 - y1)
+                        slope = ((y2-y1)/(x2-x1))
+                        radius=math.sqrt(((y2-y1)*(y2-y1))+((x2-x1)*(x2-x1)))
+                        if (slope > 0.5): #sag
+                            sag=1
+                            if (size > largestRightLineSize):
+                                largestRightLine = (x1, y1, x2, y2)                    
+                            cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        if (slope < -0.5): #sol
+                            sol=1
+                            if (size > largestLeftLineSize):
+                                largestLeftLine = (x1, y1, x2, y2)
+                            cv2.line(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                
+                        if (sag==1) & (sol==1) & (radius>40):
+                            print('Tabela Araç sola gider====>>>>>>>')
+                        if (sag==1) & (sol==0) & (radius>40):
+                            print('Tabela Araç sola gider====>>>>>>>')
+                        if (sag==0) & (sol==1) & (radius>40):
+                            print('Tabela Araç sola gider====>>>>>>>')
+                if lines is None:
+                    
+                    print('Tabela Þerit algýlanmadý...')
+               
+               
+            elif Tabela=="1001":#saða dön
+                
+                imgGrayscale=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
+                
+                imgBlurred = cv2.GaussianBlur(imgGrayscale,(5,5),0)
+                
+                imgCanny=cv2.Canny(imgBlurred,0,255)
+                
+                mask = np.zeros_like(imgCanny)
+                
+                vertices = np.array([[(180,240),(200,50),(310,50),(310,240)]],np.int32)
+                cv2.fillPoly(mask, vertices, 255)
+                
+                masked = cv2.bitwise_and(imgCanny, mask)
+                
+                lines = cv2.HoughLinesP(masked,1,np.pi/180,10,maxLineGap=150)
+                if lines is not None:
+                    sag=0
+                    sol=0
+                    for line in lines:
+                        x1, y1, x2, y2 = line[0]
+                
+                        size = math.hypot(x2 - x1, y2 - y1)
+                        slope = ((y2-y1)/(x2-x1))
+                        radius=math.sqrt(((y2-y1)*(y2-y1))+((x2-x1)*(x2-x1)))
+                        if (slope > 0.5): #sag
+                            sag=1
+                            if (size > largestRightLineSize):
+                                largestRightLine = (x1, y1, x2, y2)                    
+                            cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        if (slope < -0.5): #sol
+                            sol=1
+                            if (size > largestLeftLineSize):
+                                largestLeftLine = (x1, y1, x2, y2)
+                            cv2.line(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                
+                        if (sag==1) & (sol==1) & (radius>40):
+                            print('Tabela Araç saða gider====>>>>>>>')
+                        if (sag==1) & (sol==0) & (radius>40):
+                            print('Tabela Araç saða gider====>>>>>>>')
+                        if (sag==0) & (sol==1) & (radius>40):
+                            print('Tabela Araç saða gider====>>>>>>>')
+                if lines is None:
+                    print('Tabela Þerit algýlanmadý...')
+                
+               
+            elif Tabela=="1011":#geri dön
+                                
+                imgGrayscale=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
+                
+                imgBlurred = cv2.GaussianBlur(imgGrayscale,(5,5),0)
+                
+                imgCanny=cv2.Canny(imgBlurred,0,255)
+                
+                mask = np.zeros_like(imgCanny)
+                
+                vertices =np.array([[(15,240),(95,140),(225,140),(305,240)]],np.int32)
+                cv2.fillPoly(mask, vertices, 255)
+                
+                masked = cv2.bitwise_and(imgCanny, mask)
+                
+                lines = cv2.HoughLinesP(masked,1,np.pi/180,10,maxLineGap=150)
+                if lines is not None:
+                    sag=0
+                    sol=0
+                    for line in lines:
+                        x1, y1, x2, y2 = line[0]
+                        size = math.hypot(x2 - x1, y2 - y1)
+                        slope = ((y2-y1)/(x2-x1))
+                        radius=math.sqrt(((y2-y1)*(y2-y1))+((x2-x1)*(x2-x1)))
+                        if (slope > 0.5): #sag
+                            sag=1
+                            if (size > largestRightLineSize):
+                                largestRightLine = (x1, y1, x2, y2)                    
+                            cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        if (slope < -0.5): #sol
+                            sol=1
+                            if (size > largestLeftLineSize):
+                                largestLeftLine = (x1, y1, x2, y2)
+                            cv2.line(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                        if (sag==1) & (sol==1) & (radius>40):
+                            print('Tabela Araç geri gider...')
+                        if (sag==1) & (sol==0) & (radius>40):
+                            print('Tabela Araç geri gider...')
+                        if (sag==0) & (sol==1) & (radius>40):
+                            print('Tabela Araç geri gider...')
+                        
+                if lines is None:
+                    print('Tabela Þerit algýlanmadý...')
+               
+                            
+            elif Tabela=="0101":#ileri git
+                
+                imgGrayscale=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
+                
+                imgBlurred = cv2.GaussianBlur(imgGrayscale,(5,5),0)
+                
+                imgCanny=cv2.Canny(imgBlurred,0,255)
+                
+                mask = np.zeros_like(imgCanny)
+                vertices =np.array([[(15,240),(95,140),(225,140),(305,240)]],np.int32)
+                cv2.fillPoly(mask, vertices, 255)
+                
+                masked = cv2.bitwise_and(imgCanny, mask)
+                
+                lines = cv2.HoughLinesP(masked,1,np.pi/180,10,maxLineGap=150)
+                if lines is not None:
+                    sag=0
+                    sol=0
+                    for line in lines:
+                        x1, y1, x2, y2 = line[0]
+                        size = math.hypot(x2 - x1, y2 - y1)
+                        slope = ((y2-y1)/(x2-x1))
+                        radius=math.sqrt(((y2-y1)*(y2-y1))+((x2-x1)*(x2-x1)))
+                        if (slope > 0.5): #sag
+                            sag=1
+                            if (size > largestRightLineSize):
+                                largestRightLine = (x1, y1, x2, y2)                    
+                            cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        if (slope < -0.5): #sol
+                            sol=1
+                            if (size > largestLeftLineSize):
+                                largestLeftLine = (x1, y1, x2, y2)
+                            cv2.line(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                        if (sag==1) & (sol==1) & (radius>40):
+                            print('Tabela Araç düz gider...')
+                        if (sag==1) & (sol==0) & (radius>40):
+                            print('Tabela Araç düz gider...')
+                        if (sag==0) & (sol==1) & (radius>40):
+                            print('Tabela Araç düz gider...')
+                        
+                if lines is None:
+                    print('Tabela Þerit algýlanmadý...')
+            else:
+                tabela=open("tabela.txt","w")
+                tabela.write("...")
+             
+        cv2.imshow("Ekran",frame)
+        cv2.imshow("Siyah-Beyaz Dönüþüm",imgGrayscale)
+        
+        cv2.imshow("Gauss Filtresi",imgBlurred)
+        
+        cv2.imshow("Canny Kenar Bulma",imgCanny)
+        cv2.imshow("Ýstenilen Alan",mask)
+        cv2.imshow("Ýstenilen Alan çizgileri",masked)
+        
+        # clear the stream in preparation for the next frame
+        rawCapture.truncate(0)
+
+        # if the `q` key was pressed, break from the loop
+        if cv2.waitKey(1) & 0xFF is ord('q'):
+            cv2.destroyAllWindows()
+            print("Stop programm and close all windows")
+            break
+
+
+
+if __name__ == '__main__':
+    
+    main()               
+            
